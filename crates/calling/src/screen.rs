@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,71 @@ use libwebrtc::video_frame::I420Buffer;
 
 use crate::capture::Capture;
 use crate::error::{Error, Result};
+use crate::share_frame::ShareFrame;
+use crate::share_load::ShareLoad;
 use crate::video_frame::VideoPicture;
+
+#[cfg(target_os = "macos")]
+mod macos_picker;
+#[cfg(target_os = "macos")]
+mod macos_sck;
+#[cfg(target_os = "macos")]
+mod macos_share;
+mod native_plan;
+
+/// What the call tells a capture while it runs.
+#[derive(Clone)]
+pub struct ShareTuning {
+    pub fps: Arc<AtomicU32>,
+    /// The `max-fs` the mixer asked for, 0 until it did. A native capture renders at that size.
+    pub max_fs: Arc<AtomicU32>,
+    pub load: Arc<ShareLoad>,
+}
+
+/// Times the capturer apart from our own callback, which runs inside `capture_frame`.
+struct LegacyFeed {
+    load: Arc<ShareLoad>,
+    inside_callback_us: Arc<AtomicU64>,
+}
+
+impl LegacyFeed {
+    fn new(load: Arc<ShareLoad>) -> Self {
+        LegacyFeed {
+            load,
+            inside_callback_us: Arc::default(),
+        }
+    }
+
+    fn grab(&self, capture: impl FnOnce()) {
+        self.inside_callback_us.store(0, Ordering::Relaxed);
+        let started = Instant::now();
+        capture();
+        let spent = started.elapsed();
+        let inside = self.inside_callback_us.load(Ordering::Relaxed);
+        if inside > 0 {
+            self.load
+                .record_grab(spent.saturating_sub(Duration::from_micros(inside)));
+        }
+    }
+
+    fn deliver(
+        &self,
+        bytes: &[u8],
+        (width, height, stride): (u32, u32, u32),
+        deliver: &mut impl FnMut(ShareFrame),
+    ) {
+        let started = Instant::now();
+        let (width, height) = (width & !1, height & !1);
+        if width >= 2 && height >= 2 {
+            let buffer = i420_from_bgra(bytes, width, height, stride);
+            self.load.record_convert(started.elapsed());
+            deliver(ShareFrame::I420(buffer));
+        }
+        let inside = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.inside_callback_us
+            .store(inside.max(1), Ordering::Relaxed);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShareKind {
@@ -197,12 +261,12 @@ fn i420_from_bgra(bytes: &[u8], width: u32, height: u32, stride: u32) -> I420Buf
 
 pub fn start_screen_capture(
     wanted: ShareSource,
-    fps: Arc<AtomicU32>,
-    mut deliver: impl FnMut(I420Buffer) + Send + 'static,
+    tuning: ShareTuning,
+    mut deliver: impl FnMut(ShareFrame) + Send + 'static,
     failed: impl FnOnce(String) + Send + 'static,
 ) -> Result<Capture> {
     if current_share_picker() == SharePicker::Portal {
-        return start_portal_capture(wanted.kind, fps, deliver, move |follow| {
+        return start_portal_capture(wanted.kind, tuning, deliver, move |follow| {
             if let PortalFollowUp::Notice(text) = follow {
                 failed(text.to_owned());
             }
@@ -221,6 +285,9 @@ pub fn start_screen_capture(
         };
         let gone_since: Arc<Mutex<Option<Instant>>> = Arc::default();
         let gone_mark = gone_since.clone();
+        let feed = Arc::new(LegacyFeed::new(tuning.load.clone()));
+        let callback_feed = feed.clone();
+        let fps = tuning.fps;
         capturer.start_capture(Some(source), move |result| {
             let frame = match result {
                 Ok(frame) => frame,
@@ -236,10 +303,11 @@ pub fn start_screen_capture(
             if let Ok(mut since) = gone_mark.lock() {
                 *since = None;
             }
-            let (width, height) = (frame.width() as u32 & !1, frame.height() as u32 & !1);
-            if width >= 2 && height >= 2 {
-                deliver(i420_from_bgra(frame.data(), width, height, frame.stride()));
-            }
+            callback_feed.deliver(
+                frame.data(),
+                (frame.width() as u32, frame.height() as u32, frame.stride()),
+                &mut deliver,
+            );
         });
         while !stop.load(Ordering::SeqCst) {
             let gone = gone_since
@@ -249,7 +317,7 @@ pub fn start_screen_capture(
                 return failed("the shared source is gone".to_owned());
             }
             pump_messages();
-            capturer.capture_frame();
+            feed.grab(|| capturer.capture_frame());
             std::thread::sleep(Duration::from_secs(1) / fps.load(Ordering::Relaxed).max(1));
         }
     })
@@ -324,11 +392,18 @@ fn picker_event_from_frame<T>(
 
 pub(crate) fn start_portal_capture(
     kind: ShareKind,
-    fps: Arc<AtomicU32>,
-    mut deliver: impl FnMut(I420Buffer) + Send + 'static,
+    tuning: ShareTuning,
+    mut deliver: impl FnMut(ShareFrame) + Send + 'static,
     outcome: impl FnOnce(PortalFollowUp) + Send + 'static,
 ) -> Result<Capture> {
+    #[cfg(target_os = "macos")]
+    if macos_share::available() {
+        return macos_share::start(kind, tuning, deliver, outcome);
+    }
     Capture::spawn_thread("portal-share", move |stop| {
+        let feed = Arc::new(LegacyFeed::new(tuning.load.clone()));
+        let callback_feed = feed.clone();
+        let fps = tuning.fps;
         libwebrtc::desktop_capturer::ensure_shared_glib_loop();
         let Some(mut capturer) = capturer(kind) else {
             outcome(PortalFollowUp::Notice(PORTAL_UNAVAILABLE_NOTICE));
@@ -359,10 +434,11 @@ pub(crate) fn start_portal_capture(
                 gate.store(true, Ordering::SeqCst);
             }
             let Ok(frame) = result else { return };
-            let (width, height) = (frame.width() as u32 & !1, frame.height() as u32 & !1);
-            if width >= 2 && height >= 2 {
-                deliver(i420_from_bgra(frame.data(), width, height, frame.stride()));
-            }
+            callback_feed.deliver(
+                frame.data(),
+                (frame.width() as u32, frame.height() as u32, frame.stride()),
+                &mut deliver,
+            );
         });
         if delegated {
             capturer.watch_picker(move |event| {
@@ -375,7 +451,7 @@ pub(crate) fn start_portal_capture(
                 return;
             }
             if !delegated {
-                capturer.capture_frame();
+                feed.grab(|| capturer.capture_frame());
             }
             match receiver.recv_timeout(Duration::from_millis(40)) {
                 Ok(event) => break event,
@@ -407,10 +483,10 @@ pub(crate) fn start_portal_capture(
             outcome(follow);
             return;
         }
-        capturer.capture_frame();
+        feed.grab(|| capturer.capture_frame());
         outcome(follow);
         while !stop.load(Ordering::SeqCst) {
-            capturer.capture_frame();
+            feed.grab(|| capturer.capture_frame());
             std::thread::sleep(Duration::from_secs(1) / fps.load(Ordering::Relaxed).max(1));
         }
     })
@@ -569,7 +645,11 @@ mod portal_smoke {
         let (sender, receiver) = std::sync::mpsc::channel();
         let capture = start_portal_capture(
             ShareKind::Screen,
-            Arc::new(AtomicU32::new(5)),
+            super::ShareTuning {
+                fps: Arc::new(AtomicU32::new(5)),
+                max_fs: Arc::default(),
+                load: crate::share_load::ShareLoad::new(),
+            },
             move |_| {
                 counter.fetch_add(1, Ordering::Relaxed);
             },

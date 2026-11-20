@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use libwebrtc::media_stream_track::MediaStreamTrack;
 use libwebrtc::peer_connection_factory::PeerConnectionFactory;
@@ -8,7 +8,9 @@ use libwebrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
 use libwebrtc::rtp_parameters::DegradationPreference;
 use libwebrtc::rtp_sender::RtpSender;
 use libwebrtc::rtp_transceiver::{RtpTransceiver, RtpTransceiverDirection};
-use libwebrtc::video_frame::{I420Buffer, VideoBuffer as _, VideoFrame, VideoRotation};
+#[cfg(target_os = "macos")]
+use libwebrtc::video_frame::native::VideoFrameBufferExt as _;
+use libwebrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use libwebrtc::video_source::VideoResolution;
 use libwebrtc::video_source::native::NativeVideoSource;
 use libwebrtc::video_track::RtcVideoTrack;
@@ -24,11 +26,13 @@ use crate::effects::CameraEffects;
 use crate::error::{Error, Result};
 use crate::notices::{CAMERA_STOPPED_NOTICE, SCREEN_SHARE_STOPPED_NOTICE, notice_with_detail};
 use crate::screen::{
-    PortalFollowUp, ShareKind, ShareSource, start_portal_capture, start_screen_capture,
+    PortalFollowUp, ShareKind, ShareSource, ShareTuning, start_portal_capture, start_screen_capture,
 };
 use crate::send_control::{
     EncoderLimits, KEYFRAME_NUDGE, LayerPlan, SendLimit, encoder_limits, plan_layers,
 };
+use crate::share_frame::ShareFrame;
+use crate::share_load::{FramePath, ShareLoad};
 use crate::standout::StandoutOverlay;
 use crate::timeline::Timeline;
 use crate::video_frame::{
@@ -66,13 +70,20 @@ impl VideoMode {
     }
 }
 
+/// The local preview of a native frame is rebuilt on the CPU, so it is thinner
+/// than the 15 fps the encoder gets and capped in width.
+const NATIVE_PREVIEW_FPS: u32 = 8;
+const NATIVE_PREVIEW_WIDTH: u32 = 1280;
+
 /// Where a captured frame goes: the encoder source and, for the self view, the UI hub.
 pub struct LocalSink {
     source: NativeVideoSource,
     self_view: Option<(Arc<VideoHub>, VideoKey, FrameGate)>,
+    native_gate: FrameGate,
     mirror: Option<Arc<BlurSettings>>,
     standout: Option<StandoutOverlay>,
     frame_size: Option<Arc<AtomicU64>>,
+    load: Option<Arc<ShareLoad>>,
 }
 
 impl LocalSink {
@@ -88,9 +99,11 @@ impl LocalSink {
         LocalSink {
             source,
             self_view,
+            native_gate: FrameGate::new(NATIVE_PREVIEW_FPS),
             mirror: None,
             standout: None,
             frame_size: None,
+            load: None,
         }
     }
 
@@ -109,28 +122,84 @@ impl LocalSink {
         self
     }
 
-    pub fn push(&mut self, buffer: I420Buffer) {
-        let buffer = match &mut self.standout {
-            Some(overlay) => overlay.apply(buffer),
-            None => buffer,
+    pub fn measured_by(mut self, load: Arc<ShareLoad>) -> Self {
+        self.load = Some(load);
+        self
+    }
+
+    /// The overlay draws on pixels, so only then does a native frame come to memory.
+    fn overlaid(&mut self, frame: ShareFrame) -> ShareFrame {
+        let Some(overlay) = self.standout.as_mut().filter(|overlay| overlay.is_active()) else {
+            return frame;
         };
-        if let Some(frame_size) = &self.frame_size {
-            frame_size.store(
-                pack_size(buffer.width(), buffer.height()),
-                Ordering::Relaxed,
-            );
+        let started = Instant::now();
+        let native = frame.path() == FramePath::NativeNv12;
+        let buffer = frame.into_i420();
+        if native && let Some(load) = &self.load {
+            load.record_convert(started.elapsed());
         }
-        let mut frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
-        frame.timestamp_us = SystemTime::now()
+        ShareFrame::I420(overlay.apply(buffer))
+    }
+
+    pub fn push(&mut self, frame: impl Into<ShareFrame>) {
+        let pushed = Instant::now();
+        let frame = self.overlaid(frame.into());
+        let (width, height) = frame.size();
+        if let Some(frame_size) = &self.frame_size {
+            frame_size.store(pack_size(width, height), Ordering::Relaxed);
+        }
+        if let Some(load) = &self.load {
+            load.note_frame(pushed, (width, height), frame.path());
+        }
+        let timestamp_us = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_micros() as i64);
-        self.source.capture_frame(&frame);
+        match frame {
+            ShareFrame::I420(buffer) => {
+                let mut frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+                frame.timestamp_us = timestamp_us;
+                self.hand_over(&frame);
+                self.show(pushed, false, || frame.buffer);
+            }
+            #[cfg(target_os = "macos")]
+            ShareFrame::Native(buffer) => {
+                let mut frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+                frame.timestamp_us = timestamp_us;
+                self.hand_over(&frame);
+                self.show(pushed, true, || frame.buffer.to_i420());
+            }
+        }
+        if let Some(load) = &self.load {
+            load.record_push(pushed.elapsed());
+        }
+    }
+
+    fn hand_over<T: AsRef<dyn libwebrtc::video_frame::VideoBuffer>>(&self, frame: &VideoFrame<T>) {
+        let started = Instant::now();
+        self.source.capture_frame(frame);
+        if let Some(load) = &self.load {
+            load.record_handoff(started.elapsed());
+        }
+    }
+
+    /// The self view. A native frame is converted only when the gate lets one through.
+    fn show(&mut self, now: Instant, native: bool, i420: impl FnOnce() -> I420Buffer) {
         let Some((hub, key, gate)) = &mut self.self_view else {
             return;
         };
-        if gate.admit(Instant::now())
-            && let Some(mut picture) = picture_from_i420(frame.buffer, key.max_width())
-        {
+        let (gate, max_width) = if native {
+            (
+                &mut self.native_gate,
+                key.max_width().min(NATIVE_PREVIEW_WIDTH),
+            )
+        } else {
+            (gate, key.max_width())
+        };
+        if !gate.admit(now) {
+            return;
+        }
+        let started = Instant::now();
+        if let Some(mut picture) = picture_from_i420(i420(), max_width) {
             if self
                 .mirror
                 .as_ref()
@@ -139,6 +208,9 @@ impl LocalSink {
                 picture.flip_horizontally();
             }
             hub.publish(key.clone(), picture);
+        }
+        if let Some(load) = &self.load {
+            load.record_preview(started.elapsed());
         }
     }
 }
@@ -216,6 +288,9 @@ pub struct LocalVideo {
     /// commands must attach that capturer, not replace it.
     portal_bound: bool,
     camera_bitrate_cap: Option<u64>,
+    share_load: Arc<ShareLoad>,
+    /// The `max-fs` the mixer asked of the share. A native capture renders at that size.
+    share_max_fs: Arc<AtomicU32>,
 }
 
 impl LocalVideo {
@@ -247,6 +322,8 @@ impl LocalVideo {
             portal_keep: false,
             portal_bound: false,
             camera_bitrate_cap: None,
+            share_load: ShareLoad::new(),
+            share_max_fs: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -256,6 +333,20 @@ impl LocalVideo {
 
     pub fn attach_timeline(&mut self, timeline: Timeline) {
         self.timeline = Some(timeline);
+    }
+
+    /// How long the call loop waited for the peer statistics, noted while a share runs.
+    pub fn note_stats_poll(&self, elapsed: Duration) {
+        if self.sharing() {
+            self.share_load.record_stats_poll(elapsed);
+        }
+    }
+
+    /// The compact line for the support bundle, at most one per window and only during a share.
+    pub fn take_share_load_report(&self, now: Instant) -> Option<String> {
+        self.sharing()
+            .then(|| self.share_load.take_report(now))
+            .flatten()
     }
 
     pub fn video_quality(&self) -> VideoQuality {
@@ -335,6 +426,11 @@ impl LocalVideo {
             limits: limits.to_vec(),
             applied_for: frame,
         });
+        if source == SendSource::Screen {
+            let max_fs = limits.iter().filter_map(|limit| limit.max_fs).max();
+            self.share_max_fs
+                .store(max_fs.unwrap_or(0), Ordering::Relaxed);
+        }
         let rids: Vec<String> = sender
             .parameters()
             .encodings
@@ -657,12 +753,22 @@ impl LocalVideo {
 
     /// Local share frames go to the encoder and to the window in the chat.
     fn screen_sink(&self) -> LocalSink {
+        self.share_load.reset(Instant::now());
         LocalSink::new(
             self.screen.source.clone(),
             Some((self.hub.clone(), VideoKey::LocalScreen)),
         )
         .with_standout(self.blur.clone())
         .reporting_size(self.screen.frame_size.clone())
+        .measured_by(self.share_load.clone())
+    }
+
+    fn share_tuning(&self) -> ShareTuning {
+        ShareTuning {
+            fps: self.share_fps.clone(),
+            max_fs: self.share_max_fs.clone(),
+            load: self.share_load.clone(),
+        }
     }
 
     /// A capture thread that was replaced meanwhile must not switch off its successor.
@@ -821,8 +927,8 @@ impl LocalVideo {
         let updates = self.updates.clone();
         let capture = start_portal_capture(
             kind,
-            self.share_fps.clone(),
-            move |buffer| sink.push(buffer),
+            self.share_tuning(),
+            move |frame| sink.push(frame),
             move |follow| match follow {
                 PortalFollowUp::Share(source) => {
                     let _ = commands.send(CallCommand::FinishPortalShare { source, generation });
@@ -863,8 +969,8 @@ impl LocalVideo {
                 VideoMode::Pattern => Capture::Task(spawn_pattern(sink, PatternKind::Screen, None)),
                 _ => start_screen_capture(
                     source.clone(),
-                    self.share_fps.clone(),
-                    move |buffer| sink.push(buffer),
+                    self.share_tuning(),
+                    move |frame| sink.push(frame),
                     self.report_failure(
                         SCREEN_SHARE_STOPPED_NOTICE,
                         &self.share_generation,

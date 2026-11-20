@@ -64,6 +64,8 @@ pub mod screen;
 pub mod sdp;
 pub mod segmentation;
 pub mod send_control;
+pub mod share_frame;
+pub mod share_load;
 pub mod signaling;
 pub mod software_audio;
 pub mod sound_capture;

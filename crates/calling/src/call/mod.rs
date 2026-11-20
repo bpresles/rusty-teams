@@ -1785,10 +1785,14 @@ async fn drive(
                         let Some(limits) = send_requests.admit(&request) else { continue };
                         let own_screen = roster.screen_source_of(&own_mri).map(i64::from);
                         let source = if request.source_id.is_some() && request.source_id == own_screen { SendSource::Screen } else { SendSource::Camera };
+                        timeline.record("send request", format!("{} routed to {source:?} (own screen source {own_screen:?}, sharing {})", request.shape, local_video.sharing()));
                         match local_video.apply_send_limit(source, &limits) {
                             Ok(Some(plans)) => timeline.record("send limits", format!("{source:?} {plans:?}")),
-                            Ok(None) => {}
-                            Err(error) => timeline.record("send limits failed", error.to_string()),
+                            Ok(None) => send_requests.forget(request.source_id),
+                            Err(error) => {
+                                send_requests.forget(request.source_id);
+                                timeline.record("send limits failed", error.to_string());
+                            }
                         }
                     }
                     Ok(CallEvent::Speakers(sources)) => {
@@ -2719,7 +2723,12 @@ async fn drive(
                     }
                     control.send(CallUpdate::Speakers(speakers));
                 }
+                let stats_started = Instant::now();
                 let snapshot = collect_stats(&current.peer, &layout_plan.screen_share_mids).await;
+                local_video.note_stats_poll(stats_started.elapsed());
+                if let Some(report) = local_video.take_share_load_report(std::time::Instant::now()) {
+                    timeline.record("share load", report);
+                }
                 ticks += 1;
                 if caption_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     caption_deadline = None;

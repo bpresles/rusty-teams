@@ -155,6 +155,11 @@ impl StandoutOverlay {
         }
     }
 
+    /// Whether `apply` would draw anything. A share that is not drawn on can skip the CPU copy.
+    pub fn is_active(&self) -> bool {
+        self.settings.standout() && self.settings.cutout().is_some()
+    }
+
     pub fn apply(&mut self, mut frame: I420Buffer) -> I420Buffer {
         if !self.settings.standout() {
             return frame;

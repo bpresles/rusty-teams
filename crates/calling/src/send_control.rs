@@ -169,6 +169,11 @@ impl RequestFilter {
         let keyframe = request.limits.iter().any(|limit| limit.keyframe);
         (!unchanged || keyframe).then(|| request.limits.clone())
     }
+
+    /// A request that could not be applied (nothing was sending yet, or the encoder refused it) must not make its repeat look like a no-op.
+    pub fn forget(&mut self, source_id: Option<i64>) {
+        self.last_limits.remove(&source_id);
+    }
 }
 
 fn macroblocks(width: f64, height: f64) -> u32 {
@@ -384,6 +389,18 @@ mod tests {
             filter.admit(&request(8, "max-fs=3600")).unwrap()[0].max_fs,
             Some(3600)
         );
+    }
+
+    #[test]
+    fn a_forgotten_request_is_admitted_again() {
+        let request = |sequence: i64| {
+            parse_request(&json!({"sequenceNumber": sequence, "controlInfo": [{"sourceId": 405, "fmtParams": "max-fs=920"}]})).unwrap()
+        };
+        let mut filter = RequestFilter::default();
+        assert!(filter.admit(&request(1)).is_some());
+        assert!(filter.admit(&request(2)).is_none());
+        filter.forget(Some(405));
+        assert!(filter.admit(&request(3)).is_some());
     }
 
     #[test]
