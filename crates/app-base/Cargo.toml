@@ -36,6 +36,11 @@ resvg = { version = "0.46", default-features = false, features = ["text"] }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+notify-rust = "4"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["shape"] }
 ksni = { version = "0.3", features = ["blocking"] }
@@ -44,15 +49,13 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon = { version = "0.21", default-features = false }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-notify-rust = "4"
-
 [target.'cfg(windows)'.dependencies]
 libc = "0.2"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_Globalization",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_Diagnostics_Debug",

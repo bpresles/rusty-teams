@@ -3,9 +3,9 @@ status: accepted
 date: 2026-11-15
 ---
 
-# ADR 0018: macOS desktop toasts use Notification Center
+# ADR 0023: macOS desktop toasts use Notification Center
 
-The fork changelog for 0.4.0-joe.6 called this record 0017. Upstream then shipped guest orgs as ADR 0017, so this note is 0018.
+The fork changelog for 0.4.0-joe.6 called this record 0017. A later upstream sync shipped guest orgs as ADR 0017, so this note became 0018. Upstream then shipped regional format as ADR 0018, so this note is 0023.
 
 ## Context
 

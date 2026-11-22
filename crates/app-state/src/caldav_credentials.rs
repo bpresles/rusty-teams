@@ -1,4 +1,4 @@
-//! OS keyring storage for CalDAV app passwords (ADR 0018).
+//! OS keyring storage for CalDAV app passwords (ADR 0019).
 
 const SERVICE: &str = "rusty-teams.caldav";
 

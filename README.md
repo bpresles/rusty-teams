@@ -10,10 +10,11 @@
 [![GPUI](https://img.shields.io/badge/UI-GPUI-c4642d)](https://www.gpui.rs/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-3b3b3b)](#status)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea043)](LICENSE)
+[![Discord](https://img.shields.io/badge/chat-Discord-5865f2?logo=discord&logoColor=white)](https://discord.gg/SPQQp3DCH)
 
-[Features](#features) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Roadmap](ROADMAP.md)
+[Features](#features) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Roadmap](ROADMAP.md) · [Discord](https://discord.gg/SPQQp3DCH)
 
-<img src=".github/app-demo.png" alt="Rusty Teams with demo data" width="900">
+<img src=".github/app-demo.png" alt="Rusty Teams" width="900">
 
 </div>
 
@@ -87,20 +88,55 @@
 
 ## Status
 
-| Platform | State |
-|---|---|
-| 🪟 Windows | Main target. Login through an embedded WebView2 |
-| 🐧 Linux | Starts your default browser on its own when it is Chromium- or Firefox-based (Chrome, Chromium, Firefox, Zen, LibreWolf, Floorp), else the first one installed; Settings > General > Teams session browser picks another (debug port 9222, own profile in the XDG data folder) and keeps it headless in the background. When Teams asks for a login, the browser window shows itself and goes back to the background once you are signed in. `--endpoint` connects to a browser you started yourself instead. Color emoji use a bundled bitmap Noto Color Emoji font; a system COLRv1 face of the same name is left out of the font list. The window id is `rusty-teams`. On start the app offers to install itself to `~/.local/share/rusty-teams/teams` (moved, or copied when started from a cargo `target` folder) and writes `~/.local/share/applications/rusty-teams.desktop`; starting a newer build offers to replace the installed one, and Settings > General can install, replace, remove or bring the question back. The installed copy of a release build looks for new GitHub releases (Settings > General > Automatic updates) and asks before it downloads and restarts. Tray icon through StatusNotifierItem (KDE Plasma natively, GNOME with the AppIndicator extension); with "Close to tray" the window closes and the app keeps running in the tray, which opens a new window. Release assets also include a Flatpak (`packaging/flatpak/`, install with `flatpak install --user rusty-teams-<ver>-x86_64.flatpak`): Chrome is bundled as Flatpak extra-data, sandbox defaults cover calls/tray/toasts/screen share, and Flatpak owns updates (no XDG self-install / GitHub self-update). Built-in login without a browser is planned |
-| 🍎 macOS | Starts your default browser on its own when it is Chromium- or Firefox-based (Google Chrome, Chromium, Microsoft Edge, Brave, Helium, Vivaldi, Firefox, Zen, LibreWolf, Floorp), else the first one installed; Settings > General > Teams session browser picks another (debug port 9222, own profile under Application Support) and keeps it headless in the background. When Teams asks for a login, the browser window shows itself and goes back to the background once you are signed in. `--endpoint` connects to a browser you started yourself instead. Universal arm64 + x86_64 `.app` bundle (optional codesign/notarize). Screen share uses the ScreenCaptureKit system dialog. Menu-bar tray and Notification Center toasts; live checklist in [docs/macos-smoke.md](docs/macos-smoke.md) |
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| Support | Main target | Supported | Supported |
+| Sign-in | Embedded WebView2 | Your browser, headless | Your browser, headless |
+| Download | `.exe` | `.tar.gz`, self-installs to the app menu | Universal `.app` (arm64 + x86_64) |
+| Tray icon | Yes | StatusNotifierItem | Menu bar |
+| Auto-update | - | Yes | - |
+
+<details>
+<summary><b>Sign-in on Linux and macOS</b></summary>
+
+- Uses your default browser when it is Chromium- or Firefox-based, else the first one installed.
+  - Linux: Chrome, Chromium, Firefox, Zen, LibreWolf, Floorp
+  - macOS: also Edge, Brave, Helium, Vivaldi
+- Settings > General > Teams session browser picks another one.
+- The browser runs headless with its own profile. It only shows a window when Teams asks you to sign in.
+- `--endpoint` connects to a Chrome you started yourself.
+- A built-in login without a browser is planned.
+
+</details>
+
+<details>
+<summary><b>Linux details</b></summary>
+
+- **Install:** on first start the app offers to install itself to `~/.local/share/rusty-teams/teams` and adds it to the application menu. Settings > General can install, replace or remove it.
+- **Updates:** the installed release build checks GitHub releases and asks before it downloads and restarts.
+- **Flatpak:** release assets also include a Flatpak (`flatpak install --user rusty-teams-<ver>-x86_64.flatpak`). Chrome is bundled as extra-data. Flatpak owns updates (no XDG self-install and no GitHub self-update).
+- **Tray:** KDE Plasma natively, GNOME with the AppIndicator extension. "Show icon in the tray" plus "On close, keep the application running" keeps the app in the tray.
+- **Window id:** `rusty-teams`, for window manager rules.
+- **Emoji:** a bundled Noto Color Emoji font, so they look the same on every distro.
+
+</details>
+
+<details>
+<summary><b>macOS details</b></summary>
+
+- Screen share uses the ScreenCaptureKit system dialog.
+- Menu-bar tray and Notification Center toasts. Live checklist: [docs/macos-smoke.md](docs/macos-smoke.md).
+
+</details>
 
 The remaining gaps are planned, see [ROADMAP.md](ROADMAP.md).
 
 ## Quick start
 
-Try it with demo data, no account needed:
+Download the build for your platform from [Releases](https://github.com/danieldaeschle/rusty-teams/releases) and sign in with your work account. Or build it yourself:
 
 ```bash
-cargo run -p app -- --demo
+cargo run --release -p app
 ```
 
 ### Google Calendar (optional)
@@ -126,6 +162,7 @@ Before the next `v*` tag:
 | Against Chrome on a debug port | `cargo run -p app -- --endpoint http://127.0.0.1:9222` |
 | Windows exe from WSL/Linux | `scripts/build-windows.sh crates/app teams` |
 | macOS .app (universal arm64 + x86_64), Xcode CLT only | `scripts/build-macos.sh crates/app teams` |
+| Linux AppImage, deb, rpm and tar.gz in `dist/release` (needs [nfpm](https://nfpm.goreleaser.com) for deb/rpm) | `packaging/linux/package.sh` |
 | Tests | `cargo test` |
 | Headless screenshot (Xvfb, xdotool, xclip, mesa-vulkan-drivers) | `cargo build -p app && scripts/headless-shot.sh shot.png -- "mousemove 450 740" "click 1" "type hello"` |
 | Layout sweep before every UI deploy: 8 screens at 640x480 and 1920x1080, PNGs in `target/layout-sweep` (look at each) | `cargo build -p app && scripts/layout-sweep.sh` |

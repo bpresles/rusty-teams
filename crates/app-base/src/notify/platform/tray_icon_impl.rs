@@ -54,7 +54,7 @@ impl Tray {
             .map(|duration| {
                 MenuItem::with_id(
                     tray_status::duration_id(duration),
-                    tray_status::duration_label(duration),
+                    duration.label(),
                     duration_enabled,
                     None,
                 )
@@ -141,7 +141,7 @@ impl Tray {
             .iter()
             .zip(tray_status::STATUS_DURATIONS.into_iter())
         {
-            let _ = item.set_text(tray_status::duration_label(duration));
+            let _ = item.set_text(duration.label());
         }
     }
 
@@ -238,4 +238,3 @@ fn tray_icons(icon_png: &[u8]) -> Option<(Icon, Icon)> {
         Icon::from_rgba(dotted.into_raw(), TRAY_ICON_SIZE, TRAY_ICON_SIZE).ok()?,
     ))
 }
-

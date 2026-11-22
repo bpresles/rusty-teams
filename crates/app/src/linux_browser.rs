@@ -6,6 +6,7 @@ use tokio::sync::{Notify, mpsc, watch};
 
 use crate::backend::BackendEvent;
 use crate::browser_sign_in::BrowserSignInState;
+use crate::linux_park::{self, ParkClock};
 
 const STARTUP_WAIT: Duration = Duration::from_secs(20);
 const RELAUNCH_WAIT: Duration = Duration::from_secs(5);
@@ -208,11 +209,18 @@ pub fn start(endpoint: &str) -> Arc<dyn session::Transport> {
             }
         }
     });
+    let park = ParkClock::new();
+    // Parking checks the MSAL cache over CDP, so it runs with a Chromium browser only.
+    // macOS keeps the clock but never parks: nobody has run it there yet.
+    if cfg!(target_os = "linux") && browser.bidi().is_none() {
+        linux_park::spawn(park.clone(), browser.clone(), endpoint);
+    }
     Arc::new(LinuxTransport::new(
         endpoint,
         browser,
         init_done_rx,
         headless_notify,
+        park,
     ))
 }
 
@@ -230,6 +238,7 @@ struct LinuxTransport {
     browser: browser::Browser,
     init_done: watch::Receiver<bool>,
     headless_notify: Arc<Notify>,
+    park: Arc<ParkClock>,
 }
 
 impl LinuxTransport {
@@ -238,12 +247,14 @@ impl LinuxTransport {
         browser: browser::Browser,
         init_done: watch::Receiver<bool>,
         headless_notify: Arc<Notify>,
+        park: Arc<ParkClock>,
     ) -> Self {
         LinuxTransport {
             inner: browser::session_transport(&browser, endpoint),
             browser,
             init_done,
             headless_notify,
+            park,
         }
     }
 
@@ -294,6 +305,7 @@ impl session::Transport for LinuxTransport {
             if self.browser.is_visible_managed() {
                 return Ok(None);
             }
+            self.park.touch();
             self.inner.open(app, with_events).await
         })
     }
@@ -304,6 +316,7 @@ impl session::Transport for LinuxTransport {
             if self.browser.is_visible_managed() {
                 return Ok(());
             }
+            self.park.touch();
             self.inner.wake(app).await
         })
     }
@@ -322,6 +335,7 @@ impl session::Transport for LinuxTransport {
     }
 
     fn hold(&self, app: session::App, held: bool) {
+        self.park.hold(held);
         self.inner.hold(app, held)
     }
 }

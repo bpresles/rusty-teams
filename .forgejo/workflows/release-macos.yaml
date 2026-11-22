@@ -54,10 +54,8 @@ jobs:
             ver="0.0.0-dev"
           fi
           mkdir -p dist
-          # Finder / Dock install: full .app zip
+          # Finder / Dock install: full .app zip. macOS does not swap a bare Mach-O in place.
           cp target/universal/release/teams-macos.zip "dist/rusty-teams-${ver}-macos-universal.zip"
-          # In-app self-update: bare lipo Mach-O (release_feed ASSET_SUFFIX -macos-universal)
-          cp target/universal/release/teams-macos-universal "dist/rusty-teams-${ver}-macos-universal"
           ls -la dist/
 
       - name: Publish Forgejo + GitHub mirror

@@ -103,6 +103,15 @@ pub fn tr_args(key: &str, args: &HashMap<String, String>) -> String {
     rust_i18n::replace_patterns(&tr(key), &patterns, &values)
 }
 
+/// `tr_with("regional.until", &[("time", "14:30")])` for a pattern with `%{time}`.
+pub fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
+    let (patterns, values): (Vec<&str>, Vec<String>) = args
+        .iter()
+        .map(|(name, value)| (*name, (*value).to_owned()))
+        .unzip();
+    rust_i18n::replace_patterns(&tr(key), &patterns, &values)
+}
+
 /// Separator between an i18n key and a detail payload in `CallUpdate::Notice`.
 pub const NOTICE_DETAIL_SEP: char = '\u{1f}';
 
@@ -192,6 +201,22 @@ mod tests {
             .map(|(key, _)| key.as_str())
             .collect();
         assert!(missing.is_empty(), "missing en or de: {missing:?}");
+    }
+
+    #[test]
+    fn every_key_resolves_in_english_and_german() {
+        let _guard = locale_test_lock();
+        let keys: Vec<String> = leaf_languages()
+            .into_iter()
+            .map(|(key, _)| key.replace('"', ""))
+            .collect();
+        assert!(keys.len() > 500, "only {} keys found", keys.len());
+        for locale in ["en", "de"] {
+            rust_i18n::set_locale(locale);
+            let raw: Vec<_> = keys.iter().filter(|key| tr(key) == **key).collect();
+            assert!(raw.is_empty(), "{locale} shows raw keys: {raw:?}");
+        }
+        rust_i18n::set_locale("en");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 mod actions;
 mod activity_sync;
 mod adaptive_card;
+mod ams_video;
 mod announcement;
 mod announcement_post;
 mod avatars;
@@ -40,6 +41,7 @@ mod image_size;
 mod images;
 mod italic;
 mod jumbo;
+mod legacy_card;
 mod library;
 mod link_sync;
 mod links;

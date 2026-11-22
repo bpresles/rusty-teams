@@ -46,7 +46,7 @@ Publish-Skript: [`scripts/ci_forgejo_publish_release.sh`](scripts/ci_forgejo_pub
 
 ## GitHub Actions
 
-GitHub ist **nur Spiegel** — keine Tests, keine Release-Compiles. CI: [`.forgejo/workflows/test.yaml`](.forgejo/workflows/test.yaml) (Push `main`). Releases: [`.forgejo/workflows/release.yaml`](.forgejo/workflows/release.yaml). Die Dateien unter `.github/workflows/` sind Stub ohne Push-Trigger.
+GitHub ist **nur Spiegel** — keine Tests, keine Release-Compiles. CI: [`.forgejo/workflows/test.yaml`](.forgejo/workflows/test.yaml) (Push `main`). Releases: [`.forgejo/workflows/release.yaml`](.forgejo/workflows/release.yaml). `build.yml` ist ein Stub ohne Push-Trigger. `packaging-lint.yml` und `pages.yml` stammen von Upstream und haben dort Push-Trigger; sie ersetzen die Forgejo-CI nicht.
 
 ## Smoke `v0.3.0-joe.1` (2026-11-12)
 

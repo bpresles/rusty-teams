@@ -37,6 +37,9 @@ const STAGING_SIZE: (usize, usize) = (960, 540);
 const LINK_IMAGE_KEY: &str =
     "https://de-prod.asyncgw.teams.microsoft.com/urlp/v1/url/image/Thumbnail?url=demo";
 const LINK_IMAGE_SIZE: (u32, u32) = (320, 180);
+const DEMO_CLIP_URL: &str = "https://eu-api.asm.skype.com/v1/objects/0-weu-d1-democlip/views/video";
+const DEMO_CLIP_THUMBNAIL_KEY: &str =
+    "https://eu-api.asm.skype.com/v1/objects/0-weu-d1-democlip/views/thumbnail";
 const PRIORITY_CHAT: &str = "demo-chat-priya";
 const BOT_CHAT: &str = "demo-chat-wiki-bot";
 const BOT_NAME: &str = "Wiki Bot";
@@ -999,7 +1002,7 @@ pub fn seed_directory(state: &mut AppState) {
     state.own_email = DEMO_USER_EMAIL.to_owned();
     state.own_time_zone = Some(DEMO_TIME_ZONE.to_owned());
     state.translation.settings = Some(language_settings());
-    state.apply_date_locale();
+    state.apply_regional_format();
     state.translation.languages = language_list();
     let directory = &mut state.directory;
     directory.me = Some(Person {
@@ -1085,6 +1088,7 @@ pub fn seed_directory(state: &mut AppState) {
         if std::fs::write(&path, png).is_ok() {
             state.directory.set_image(STAGING_IMAGE_KEY, &path);
             state.directory.set_image(LINK_IMAGE_KEY, &path);
+            state.directory.set_image(DEMO_CLIP_THUMBNAIL_KEY, &path);
         }
         let _ = SEARCHABLE_GIFS.set(demo_gifs::generate(&directory_path));
         state.directory.set_image(
@@ -1320,6 +1324,23 @@ fn with_subject(mut record: MessageRecord, subject: &str) -> MessageRecord {
     record
 }
 
+/// A Graph forward of a Teams video clip, as Teams sends a forwarded phone recording.
+fn forwarded_clip_attachments(message_id: &str, sender_id: &str) -> String {
+    let content = serde_json::json!({
+        "originalMessageId": message_id,
+        "originalMessageContent": format!(
+            r#"<p><video src="{DEMO_CLIP_URL}" itemscope="" itemtype="http://schema.skype.com/AMSVideo" width="720" height="1280" data-duration="PT12S" alt="Media"></video></p>"#
+        ),
+        "originalMessageSender": {"user": {"id": sender_id, "displayName": null}},
+    });
+    serde_json::json!([{
+        "content_type": "forwardedMessageReference",
+        "id": message_id,
+        "content": content.to_string(),
+    }])
+    .to_string()
+}
+
 fn with_attachments(mut record: MessageRecord, attachments_json: &str) -> MessageRecord {
     record.attachments_json = attachments_json.to_owned();
     record
@@ -1399,7 +1420,32 @@ fn bot_messages() -> Vec<MessageRecord> {
             bot_card_message(&format!("c{minute}"), at(0, 15, minute), chart_card)
         },
     ));
+    let mut webhook = bot_card_message("w1", at(0, 16, 0), &connector_card());
+    webhook.attachments_json = webhook.attachments_json.replace(
+        "application/vnd.microsoft.card.adaptive",
+        "application/vnd.microsoft.teams.card.o365connector",
+    );
+    messages.push(webhook);
     messages
+}
+
+fn connector_card() -> serde_json::Value {
+    serde_json::json!({
+        "@type": "MessageCard",
+        "summary": "Build failed",
+        "title": "Pipeline main",
+        "sections": [{
+            "activityTitle": "Build 128 failed",
+            "activitySubtitle": "on agent 3",
+            "facts": [{"name": "Branch", "value": "main"}, {"name": "Duration", "value": "4 min"}],
+            "text": "See the log for details."
+        }],
+        "potentialAction": [{
+            "@type": "OpenUri",
+            "name": "Open log",
+            "targets": [{"os": "default", "uri": "https://example.com/ci/128"}]
+        }]
+    })
 }
 
 fn bot_card_message(id: &str, time: DateTime<Utc>, card: &serde_json::Value) -> MessageRecord {
@@ -1857,6 +1903,19 @@ fn release_messages() -> Vec<MessageRecord> {
             r#"[{"content_type":"forwardedMessageReference","name":null,"url":null,"text":null,"id":"1789000000000","content":null,"unavailable":true}]"#,
             false,
         ),
+        with_attachments(
+            message(
+                chat,
+                "m5f",
+                None,
+                (PRIYA_ID, priya_name),
+                at(0, 12, 45),
+                "<attachment id=\"1791000000000\"></attachment>",
+                "[]",
+                false,
+            ),
+            &forwarded_clip_attachments("1791000000000", TOBIAS_ID),
+        ),
         message(
             chat,
             "m6",
@@ -1960,6 +2019,16 @@ fn release_messages() -> Vec<MessageRecord> {
             me,
             at(0, 13, 51),
             "<p>\u{1f44d}\u{1f389}</p>",
+            "[]",
+            false,
+        ),
+        message(
+            chat,
+            "m12",
+            None,
+            (LEA_ID, lea_name),
+            at(0, 13, 52),
+            "<p><strong>1\u{fe0f}\u{20e3}Freeze the branch</strong></p><p><strong>2\u{fe0f}\u{20e3}Tag the release</strong></p><p>3\u{fe0f}\u{20e3} Publish the notes</p>",
             "[]",
             false,
         ),

@@ -22,7 +22,6 @@ Run on a real Mac (`.app` from `scripts/build-macos.sh` or a release zip). Unit 
 1. Menu-bar tray icon appears; Open / presence / Quit work.
 2. Settings → General → Close to tray: close hides/reopens via the tray (new window path like Linux).
 3. Incoming chat notification reaches Notification Center (sounds still from the app).
-4. From an installed `.app` under `/Applications` (or any `*.app/Contents/MacOS/…` path), Settings can offer a self-update when a newer `*-macos-universal` release asset exists.
 
 ## Packaging
 

@@ -16,6 +16,8 @@ mod layout_guard;
 mod linux_browser;
 #[cfg(target_os = "linux")]
 mod linux_install;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod linux_park;
 #[cfg(target_os = "linux")]
 mod linux_update;
 mod main_window;
@@ -30,7 +32,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use directories::ProjectDirs;
-use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use store::Store;
 
@@ -163,7 +164,7 @@ fn transport(
 
 fn main_window_options(cx: &App) -> WindowOptions {
     let bounds = Bounds::centered(None, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), cx);
-    let mut options = TitleBar::window_options();
+    let mut options = views::title_bar::window_options();
     options.window_bounds = Some(WindowBounds::Windowed(bounds));
     options.window_min_size = Some(size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT)));
     options.app_id = Some(LINUX_APP_ID.to_owned());

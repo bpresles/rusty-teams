@@ -1,4 +1,7 @@
-#![cfg_attr(not(any(windows, target_os = "linux", target_os = "macos")), allow(dead_code))]
+#![cfg_attr(
+    not(any(windows, target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
 
 use std::cmp::Ordering;
 use std::fs;
@@ -25,11 +28,12 @@ const EXECUTABLE_MAGIC: &[u8] = b"MZ";
 const ASSET_SUFFIX: &str = "-linux-amd64";
 #[cfg(target_os = "linux")]
 const EXECUTABLE_MAGIC: &[u8] = b"\x7fELF";
-/// Universal Mach-O from `scripts/build-macos.sh` (lipo fat binary, not the .app zip).
-#[cfg(target_os = "macos")]
-const ASSET_SUFFIX: &str = "-macos-universal";
-#[cfg(target_os = "macos")]
-const EXECUTABLE_MAGIC: &[u8] = b"\xca\xfe\xba\xbe";
+/// macOS and any other target still compile. The suffix matches no release asset,
+/// so the feed stays idle. macOS updates by replacing the `.app`, not a Mach-O in place.
+#[cfg(not(any(windows, target_os = "linux")))]
+const ASSET_SUFFIX: &str = "-unsupported";
+#[cfg(not(any(windows, target_os = "linux")))]
+const EXECUTABLE_MAGIC: &[u8] = b"\0unsupported";
 const PARTIAL_SUFFIX: &str = ".partial";
 const DOWNLOAD_CHUNK: usize = 64 * 1024;
 const SHA256_PREFIX: &str = "sha256:";

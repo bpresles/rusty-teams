@@ -108,6 +108,16 @@ pub fn is_installed(executable: &Path, layout: &Layout) -> bool {
         .is_some_and(|parent| canonical(parent) == canonical(&install_dir))
 }
 
+/// Installed by a deb/rpm (under `/usr` or `/opt`), a Flatpak (under `/app`) or started from
+/// an AppImage, whose runtime sets `APPIMAGE`. Those bring their own menu entry and updates, so the app
+/// does not offer to install itself (and, outside the install folder, never updates itself).
+pub fn is_packaged(executable: &Path, appimage: Option<&std::ffi::OsStr>) -> bool {
+    appimage.is_some_and(|path| !path.is_empty())
+        || executable.starts_with("/usr")
+        || executable.starts_with("/opt")
+        || executable.starts_with("/app")
+}
+
 pub fn should_offer_install(executable: &Path, layout: &Layout, dont_ask: bool) -> bool {
     !running_in_flatpak() && !dont_ask && !is_installed(executable, layout)
 }
@@ -341,6 +351,24 @@ mod tests {
             Some(value) => unsafe { std::env::set_var(FLATPAK_ID_ENV, value) },
             None => unsafe { std::env::remove_var(FLATPAK_ID_ENV) },
         }
+    }
+
+    #[test]
+    fn package_and_appimage_installs_count_as_packaged() {
+        use std::ffi::OsStr;
+        assert!(is_packaged(Path::new("/usr/bin/teams"), None));
+        assert!(is_packaged(Path::new("/opt/rusty-teams/teams"), None));
+        assert!(is_packaged(Path::new("/app/bin/teams"), None));
+        assert!(is_packaged(
+            Path::new("/tmp/.mount_teamsAbc/usr/bin/teams"),
+            Some(OsStr::new("/home/a/Apps/rusty-teams.AppImage"))
+        ));
+        assert!(!is_packaged(Path::new("/home/a/Downloads/teams"), None));
+        assert!(!is_packaged(
+            Path::new("/home/a/.local/share/rusty-teams/teams"),
+            Some(OsStr::new(""))
+        ));
+        assert!(!is_packaged(Path::new("/usrlocal/teams"), None));
     }
 
     #[test]

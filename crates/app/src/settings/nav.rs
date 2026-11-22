@@ -28,9 +28,8 @@ const ITEM_RADIUS: f32 = 6.;
 const ITEM_ICON: f32 = 16.;
 const NAV_PADDING_X: f32 = 12.;
 
-const CALENDAR_VIEW_TERMS: [&str; 6] = [
+const CALENDAR_VIEW_TERMS: [&str; 5] = [
     "settings.calendar.default_view",
-    "settings.calendar.first_day",
     "settings.calendar.work_days",
     "settings.calendar.work_hours",
     "settings.calendar.time_scale",
@@ -54,6 +53,7 @@ fn search_terms(section: SettingsSection) -> Vec<String> {
         SettingsSection::General => vec![
             tr("settings.general.auto_start"),
             tr("settings.general.open_in_background"),
+            tr("settings.general.show_in_tray"),
             tr("settings.general.close_to_tray"),
             tr("settings.general.external_browser"),
             tr("settings.general.up_arrow"),
@@ -75,6 +75,9 @@ fn search_terms(section: SettingsSection) -> Vec<String> {
             tr("settings.notifications.send_test"),
         ],
         SettingsSection::Appearance => vec![
+            tr("settings.appearance.region.title"),
+            tr("settings.appearance.clock.title"),
+            tr("settings.appearance.first_day.title"),
             tr("settings.appearance.theme"),
             tr("settings.appearance.color_scheme"),
             tr("settings.appearance.app_icon"),
@@ -89,10 +92,9 @@ fn search_terms(section: SettingsSection) -> Vec<String> {
         ],
         SettingsSection::Calls => vec![tr("settings.calls.ringtones")],
         SettingsSection::Calendar => CALENDAR_VIEW_TERMS.iter().map(|key| tr(key)).collect(),
-        SettingsSection::CalendarAccounts => CALENDAR_ACCOUNTS_TERMS
-            .iter()
-            .map(|key| tr(key))
-            .collect(),
+        SettingsSection::CalendarAccounts => {
+            CALENDAR_ACCOUNTS_TERMS.iter().map(|key| tr(key)).collect()
+        }
         SettingsSection::Devices => vec![
             "Speaker".to_owned(),
             "Microphone".to_owned(),
@@ -405,6 +407,7 @@ mod tests {
             SettingsSection::General => &[
                 "settings.general.auto_start",
                 "settings.general.open_in_background",
+                "settings.general.show_in_tray",
                 "settings.general.close_to_tray",
                 "settings.general.up_arrow",
                 "settings.general.translate_into",
