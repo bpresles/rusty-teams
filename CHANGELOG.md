@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- The macOS app requires macOS 14 (Sonoma) or later.
+
 ## [0.5.0-joe.2] - 2026-11-23
 
 ### Fixed
