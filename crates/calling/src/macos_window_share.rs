@@ -39,6 +39,12 @@ pub(crate) enum WindowPoll<T> {
     Waiting,
     Cancelled,
     Failed,
+    /// Sharing was stopped from the system UI, such as the menu bar.
+    StoppedByUser,
+    /// The shared window is closed. On macOS 15.2+ it may still reopen.
+    WindowGone,
+    /// ScreenCaptureKit stopped the stream for another reason.
+    Interrupted,
 }
 
 pub(crate) struct MacWindowCapture {
@@ -127,6 +133,9 @@ impl MacWindowCapture {
             },
             0 => WindowPoll::Waiting,
             -1 => WindowPoll::Cancelled,
+            -3 => WindowPoll::StoppedByUser,
+            -4 => WindowPoll::WindowGone,
+            -5 => WindowPoll::Interrupted,
             _ => WindowPoll::Failed,
         }
     }

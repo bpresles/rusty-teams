@@ -22,6 +22,25 @@ typedef void (*RustyTeamsMacWindowFrameFn)(void* ctx,
 static const size_t kMinCaptureDimension = 2;
 static const size_t kMaxCaptureDimension = 16384;
 
+// Poll results once the stream has ended on its own. Keep in sync with
+// `macos_window_share.rs`.
+static const int32_t kPollStoppedByUser = -3;
+static const int32_t kPollWindowGone = -4;
+static const int32_t kPollInterrupted = -5;
+
+API_AVAILABLE(macos(14.0))
+static int32_t poll_code_for_stop_error(NSError* error) {
+  if ([error.domain isEqualToString:SCStreamErrorDomain]) {
+    if (error.code == SCStreamErrorUserStopped) {
+      return kPollStoppedByUser;
+    }
+    if (error.code == SCStreamErrorNoCaptureSource) {
+      return kPollWindowGone;
+    }
+  }
+  return kPollInterrupted;
+}
+
 static size_t clamp_dimension(double pixels) {
   if (!isfinite(pixels) || pixels < (double)kMinCaptureDimension) {
     return kMinCaptureDimension;
@@ -57,6 +76,11 @@ API_AVAILABLE(macos(14.0))
   BOOL _stopped;
   BOOL _permanentError;
   BOOL _pickerFailed;
+  // Set when ScreenCaptureKit stops the running stream: one of the
+  // kPoll* end codes, 0 while the stream runs.
+  int32_t _endCode;
+  // The shared window is closed (macOS 15.2+). It may come back.
+  BOOL _windowClosed;
   BOOL _includeCursor;
   uint32_t _maxFps;
   SCStream* _stream;
@@ -153,6 +177,12 @@ API_AVAILABLE(macos(14.0))
     }
     if (_permanentError) {
       return -1;
+    }
+    if (_endCode != 0) {
+      return _endCode;
+    }
+    if (_windowClosed) {
+      return kPollWindowGone;
     }
     if (_latestSurface == NULL) {
       return 0;
@@ -282,6 +312,7 @@ API_AVAILABLE(macos(14.0))
     size_t height = clamp_dimension(contentRect.size.height * scale);
 
     _filter = filter;
+    _windowClosed = NO;
     _configuredWidth = width;
     _configuredHeight = height;
     config = [self buildConfigWithWidth:width
@@ -341,8 +372,9 @@ API_AVAILABLE(macos(14.0))
     if (strongSelf == nil) {
       return;
     }
+    // A capture that never starts is a failure to report, not a cancel.
     @synchronized(strongSelf) {
-      strongSelf->_permanentError = YES;
+      strongSelf->_pickerFailed = YES;
     }
   }];
 }
@@ -471,11 +503,29 @@ API_AVAILABLE(macos(14.0))
   }
 }
 
+// Stopping from the menu bar arrives as SCStreamErrorUserStopped.
 - (void)stream:(SCStream*)stream didStopWithError:(NSError*)error {
-  (void)error;
+  @synchronized(self) {
+    if (!_stopped && stream == _stream && _endCode == 0) {
+      _endCode = poll_code_for_stop_error(error);
+    }
+  }
+}
+
+// macOS 15.2+: every shared window was closed. The stream keeps running and
+// would otherwise repeat the last frame.
+- (void)streamDidBecomeInactive:(SCStream*)stream {
   @synchronized(self) {
     if (!_stopped && stream == _stream) {
-      _permanentError = YES;
+      _windowClosed = YES;
+    }
+  }
+}
+
+- (void)streamDidBecomeActive:(SCStream*)stream {
+  @synchronized(self) {
+    if (stream == _stream) {
+      _windowClosed = NO;
     }
   }
 }

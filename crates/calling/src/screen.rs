@@ -355,18 +355,34 @@ fn i420_from_bgra(bytes: &[u8], width: u32, height: u32, stride: u32) -> I420Buf
     buffer
 }
 
+/// `ended` runs at most once, when the share stops on its own: with the reason
+/// to show, or with `None` when the user stopped it outside the app.
 pub fn start_screen_capture(
     wanted: ShareSource,
     fps: Arc<AtomicU32>,
     mut deliver: impl FnMut(I420Buffer) + Send + 'static,
-    failed: impl FnOnce(String) + Send + 'static,
+    ended: impl FnOnce(Option<String>) + Send + 'static,
 ) -> Result<Capture> {
     if current_share_picker() == SharePicker::Portal {
-        return start_portal_capture(wanted.kind, fps, deliver, move |follow| {
-            if let PortalFollowUp::Notice(text) = follow {
-                failed(text.to_owned());
-            }
-        });
+        let ended = Arc::new(Mutex::new(Some(ended)));
+        let failed = ended.clone();
+        return start_portal_capture(
+            wanted.kind,
+            fps,
+            deliver,
+            move |follow| {
+                if let PortalFollowUp::Notice(text) = follow
+                    && let Some(failed) = take_once(&failed)
+                {
+                    failed(Some(text.to_owned()));
+                }
+            },
+            move |reason| {
+                if let Some(ended) = take_once(&ended) {
+                    ended(reason);
+                }
+            },
+        );
     }
     Capture::spawn_thread("screen-capture", move |stop| {
         let Some(source) = sources_of(wanted.kind)
@@ -374,10 +390,10 @@ pub fn start_screen_capture(
             .find(|(source, _)| source.id == wanted.id)
             .map(|(_, raw)| raw)
         else {
-            return failed("the shared source is gone".to_owned());
+            return ended(Some("the shared source is gone".to_owned()));
         };
         let Some(mut capturer) = capturer(wanted.kind) else {
-            return failed("screen capture is not available".to_owned());
+            return ended(Some("screen capture is not available".to_owned()));
         };
         let gone_since: Arc<Mutex<Option<Instant>>> = Arc::default();
         let gone_mark = gone_since.clone();
@@ -408,7 +424,7 @@ pub fn start_screen_capture(
                 .lock()
                 .is_ok_and(|since| since.is_some_and(|since| since.elapsed() >= SOURCE_GONE_AFTER));
             if gone {
-                return failed("the shared source is gone".to_owned());
+                return ended(Some("the shared source is gone".to_owned()));
             }
             pump_messages();
             capturer.capture_frame();
@@ -417,6 +433,10 @@ pub fn start_screen_capture(
         }
     })
     .map_err(|error| Error::Webrtc(format!("screen thread: {error}")))
+}
+
+fn take_once<F>(slot: &Mutex<Option<F>>) -> Option<F> {
+    slot.lock().ok()?.take()
 }
 
 /// Where the share menu gets its sources. Wayland and macOS use a system dialog.
@@ -490,11 +510,14 @@ pub(crate) fn start_portal_capture(
     fps: Arc<AtomicU32>,
     mut deliver: impl FnMut(I420Buffer) + Send + 'static,
     outcome: impl FnOnce(PortalFollowUp) + Send + 'static,
+    ended: impl FnOnce(Option<String>) + Send + 'static,
 ) -> Result<Capture> {
     #[cfg(target_os = "macos")]
     if kind == ShareKind::Window && crate::macos_window_share::is_available() {
-        return start_macos_window_portal_capture(fps, deliver, outcome);
+        return start_macos_window_portal_capture(fps, deliver, outcome, ended);
     }
+    // Only the macOS window capture reports a share that ends on its own.
+    drop(ended);
     Capture::spawn_thread("portal-share", move |stop| {
         libwebrtc::desktop_capturer::ensure_shared_glib_loop();
         let Some(mut capturer) = capturer(kind) else {
@@ -589,8 +612,14 @@ fn start_macos_window_portal_capture(
     fps: Arc<AtomicU32>,
     mut deliver: impl FnMut(I420Buffer) + Send + 'static,
     outcome: impl FnOnce(PortalFollowUp) + Send + 'static,
+    ended: impl FnOnce(Option<String>) + Send + 'static,
 ) -> Result<Capture> {
     use crate::macos_window_share::{MacWindowCapture, WindowPoll};
+
+    fn to_i420(bytes: &[u8], width: u32, height: u32, stride: u32) -> Option<I420Buffer> {
+        let (width, height) = (width & !1, height & !1);
+        (width >= 2 && height >= 2).then(|| i420_from_bgra(bytes, width, height, stride))
+    }
 
     Capture::spawn_thread("portal-share", move |stop| {
         let mut last_fps = fps.load(Ordering::Relaxed).max(1);
@@ -603,10 +632,7 @@ fn start_macos_window_portal_capture(
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            match capture.poll(|bytes, width, height, stride| {
-                let (width, height) = (width & !1, height & !1);
-                (width >= 2 && height >= 2).then(|| i420_from_bgra(bytes, width, height, stride))
-            }) {
+            match capture.poll(to_i420) {
                 WindowPoll::Frame(frame) => {
                     first_frame = Some(frame);
                     break PortalPickerEvent::Selected;
@@ -614,8 +640,12 @@ fn start_macos_window_portal_capture(
                 WindowPoll::Waiting => {
                     std::thread::sleep(Duration::from_millis(40));
                 }
-                WindowPoll::Cancelled => break PortalPickerEvent::Cancelled,
-                WindowPoll::Failed => break PortalPickerEvent::Failed,
+                WindowPoll::Cancelled | WindowPoll::StoppedByUser => {
+                    break PortalPickerEvent::Cancelled;
+                }
+                WindowPoll::Failed | WindowPoll::WindowGone | WindowPoll::Interrupted => {
+                    break PortalPickerEvent::Failed;
+                }
             }
         };
         if stop.load(Ordering::SeqCst) {
@@ -635,19 +665,38 @@ fn start_macos_window_portal_capture(
             deliver(frame);
         }
         outcome(follow);
-        while !stop.load(Ordering::SeqCst) {
+        // A closed window gets the same grace as in the source list: it may
+        // reopen, and the remote side keeps the last frame meanwhile.
+        let mut gone_since: Option<Instant> = None;
+        let reason = loop {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
             let target_fps = fps.load(Ordering::Relaxed).max(1);
             if target_fps != last_fps {
                 capture.set_fps(target_fps);
                 last_fps = target_fps;
             }
-            if let WindowPoll::Frame(frame) = capture.poll(|bytes, width, height, stride| {
-                let (width, height) = (width & !1, height & !1);
-                (width >= 2 && height >= 2).then(|| i420_from_bgra(bytes, width, height, stride))
-            }) {
-                deliver(frame);
+            match capture.poll(to_i420) {
+                WindowPoll::Frame(frame) => {
+                    gone_since = None;
+                    deliver(frame);
+                }
+                WindowPoll::Waiting => gone_since = None,
+                WindowPoll::WindowGone => {
+                    if gone_since.get_or_insert_with(Instant::now).elapsed() >= SOURCE_GONE_AFTER {
+                        break Some("the shared source is gone");
+                    }
+                }
+                WindowPoll::Cancelled | WindowPoll::StoppedByUser => break None,
+                WindowPoll::Failed | WindowPoll::Interrupted => {
+                    break Some("macOS stopped the capture");
+                }
             }
             std::thread::sleep(Duration::from_secs(1) / target_fps);
+        };
+        if !stop.load(Ordering::SeqCst) {
+            ended(reason.map(str::to_owned));
         }
     })
     .map_err(|error| Error::Webrtc(format!("portal thread: {error}")))
@@ -834,6 +883,7 @@ mod portal_smoke {
                 eprintln!("PORTAL_FOLLOW={follow:?}");
                 let _ = sender.send(follow);
             },
+            |_| {},
         )
         .expect("portal thread");
         let follow = receiver
