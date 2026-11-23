@@ -252,11 +252,11 @@ impl NoiseStage {
         let apm = self.fallback_ns[channel_index]
             .get_or_insert_with(|| AudioProcessingModule::new(false, false, false, true));
         self.fallback_pcm.clear();
-        self.fallback_pcm.extend(
-            samples
-                .iter()
-                .map(|sample| sample.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16),
-        );
+        self.fallback_pcm.extend(samples.iter().map(|sample| {
+            sample
+                .round()
+                .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+        }));
         if apm
             .process_stream(&mut self.fallback_pcm, sample_rate, 1)
             .is_ok()

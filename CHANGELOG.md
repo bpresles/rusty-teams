@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0-joe.2] - 2026-11-23
+
+### Fixed
+
+- An organizer mute closes the local microphone, and the next toggle clears it.
+- Off and music mode no longer restore the classical noise-suppression track. A named microphone matches the listed device name, and a device switch counts only when audio actually starts.
+- An H.264 answer at level 3.0 with 720p limits is raised to level 3.1, so the 720p layer can encode.
+- Screen share scales the frame to the 1080p budget before the I420 conversion.
+- Linux and macOS notice a headset that appears or disappears during a call.
+
 ## [0.5.0-joe.1] - 2026-11-23
 
 ### Changed
