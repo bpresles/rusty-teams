@@ -46,7 +46,12 @@ If the endpoint that is already in the call changes state or reconnects inside t
 
 - **WHEN** the active headset disconnects and reconnects before the quiet period ends
 - **THEN** the call restarts the affected direction on that headset
-- **AND** the user is not left on a dead capture or playout stream
+- **AND** the switch counts as done only when capture or playout actually starts, including the one retry
+
+#### Scenario: Restart still fails
+
+- **WHEN** the headset returns and capture or playout still fails to start after one retry
+- **THEN** the device switch is reported as failed
 
 #### Scenario: A different device is chosen
 
