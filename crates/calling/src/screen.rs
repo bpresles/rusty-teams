@@ -491,6 +491,10 @@ pub(crate) fn start_portal_capture(
     mut deliver: impl FnMut(I420Buffer) + Send + 'static,
     outcome: impl FnOnce(PortalFollowUp) + Send + 'static,
 ) -> Result<Capture> {
+    #[cfg(target_os = "macos")]
+    if kind == ShareKind::Window && crate::macos_window_share::is_available() {
+        return start_macos_window_portal_capture(fps, deliver, outcome);
+    }
     Capture::spawn_thread("portal-share", move |stop| {
         libwebrtc::desktop_capturer::ensure_shared_glib_loop();
         let Some(mut capturer) = capturer(kind) else {
@@ -575,6 +579,75 @@ pub(crate) fn start_portal_capture(
         while !stop.load(Ordering::SeqCst) {
             capturer.capture_frame();
             std::thread::sleep(Duration::from_secs(1) / fps.load(Ordering::Relaxed).max(1));
+        }
+    })
+    .map_err(|error| Error::Webrtc(format!("portal thread: {error}")))
+}
+
+#[cfg(target_os = "macos")]
+fn start_macos_window_portal_capture(
+    fps: Arc<AtomicU32>,
+    mut deliver: impl FnMut(I420Buffer) + Send + 'static,
+    outcome: impl FnOnce(PortalFollowUp) + Send + 'static,
+) -> Result<Capture> {
+    use crate::macos_window_share::{MacWindowCapture, WindowPoll};
+
+    Capture::spawn_thread("portal-share", move |stop| {
+        let mut last_fps = fps.load(Ordering::Relaxed).max(1);
+        let Some(capture) = MacWindowCapture::start(last_fps, true) else {
+            outcome(PortalFollowUp::Notice(PORTAL_UNAVAILABLE_NOTICE));
+            return;
+        };
+        let mut first_frame = None;
+        let event = loop {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            match capture.poll(|bytes, width, height, stride| {
+                let (width, height) = (width & !1, height & !1);
+                (width >= 2 && height >= 2).then(|| i420_from_bgra(bytes, width, height, stride))
+            }) {
+                WindowPoll::Frame(frame) => {
+                    first_frame = Some(frame);
+                    break PortalPickerEvent::Selected;
+                }
+                WindowPoll::Waiting => {
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                WindowPoll::Cancelled => break PortalPickerEvent::Cancelled,
+                WindowPoll::Failed => break PortalPickerEvent::Failed,
+            }
+        };
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let source = (event == PortalPickerEvent::Selected).then(|| ShareSource {
+            id: 0,
+            kind: ShareKind::Window,
+            title: String::new(),
+        });
+        let follow = portal_follow_up(event, source);
+        if !matches!(follow, PortalFollowUp::Share(_)) {
+            outcome(follow);
+            return;
+        }
+        if let Some(frame) = first_frame {
+            deliver(frame);
+        }
+        outcome(follow);
+        while !stop.load(Ordering::SeqCst) {
+            let target_fps = fps.load(Ordering::Relaxed).max(1);
+            if target_fps != last_fps {
+                capture.set_fps(target_fps);
+                last_fps = target_fps;
+            }
+            if let WindowPoll::Frame(frame) = capture.poll(|bytes, width, height, stride| {
+                let (width, height) = (width & !1, height & !1);
+                (width >= 2 && height >= 2).then(|| i420_from_bgra(bytes, width, height, stride))
+            }) {
+                deliver(frame);
+            }
+            std::thread::sleep(Duration::from_secs(1) / target_fps);
         }
     })
     .map_err(|error| Error::Webrtc(format!("portal thread: {error}")))
@@ -710,6 +783,16 @@ mod portal_share_tests {
             portal_follow_up(PortalPickerEvent::Failed, Some(source)),
             PortalFollowUp::Notice(PORTAL_UNAVAILABLE_NOTICE)
         ));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_window_capturer_tests {
+    #[test]
+    fn macos_sck_window_capture_is_available_on_macos_14_or_newer() {
+        // Build host is macOS 14+, so ScreenCaptureKit single-window picker
+        // support should be detected without invoking the UI.
+        assert!(crate::macos_window_share::is_available());
     }
 }
 

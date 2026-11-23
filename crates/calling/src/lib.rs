@@ -31,6 +31,8 @@ pub mod level;
 #[cfg(windows)]
 mod loopback_windows;
 pub mod luma_effects;
+#[cfg(target_os = "macos")]
+mod macos_window_share;
 pub mod mask;
 pub mod matte;
 #[cfg(windows)]
