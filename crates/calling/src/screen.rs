@@ -616,11 +616,6 @@ fn start_macos_window_portal_capture(
 ) -> Result<Capture> {
     use crate::macos_window_share::{MacWindowCapture, WindowPoll};
 
-    fn to_i420(bytes: &[u8], width: u32, height: u32, stride: u32) -> Option<I420Buffer> {
-        let (width, height) = (width & !1, height & !1);
-        (width >= 2 && height >= 2).then(|| i420_from_bgra(bytes, width, height, stride))
-    }
-
     Capture::spawn_thread("portal-share", move |stop| {
         let mut last_fps = fps.load(Ordering::Relaxed).max(1);
         let Some(capture) = MacWindowCapture::start(last_fps, true) else {
@@ -632,7 +627,7 @@ fn start_macos_window_portal_capture(
             if stop.load(Ordering::SeqCst) {
                 return;
             }
-            match capture.poll(to_i420) {
+            match capture.poll(share_frame) {
                 WindowPoll::Frame(frame) => {
                     first_frame = Some(frame);
                     break PortalPickerEvent::Selected;
@@ -677,7 +672,7 @@ fn start_macos_window_portal_capture(
                 capture.set_fps(target_fps);
                 last_fps = target_fps;
             }
-            match capture.poll(to_i420) {
+            match capture.poll(share_frame) {
                 WindowPoll::Frame(frame) => {
                     gone_since = None;
                     deliver(frame);
